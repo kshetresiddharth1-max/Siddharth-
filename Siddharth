@@ -1,0 +1,543 @@
+--!nocheck
+--[[
+  HUS HUB — High School Life RP
+  Place: 95106067682145
+  Key: HUS2026
+  Hit remote: ReplicatedStorage.Packages.Knit.Services.CombatService.RF.Hit
+--]]
+
+local Players    = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS        = game:GetService("UserInputService")
+local RS         = game:GetService("ReplicatedStorage")
+local Lighting   = game:GetService("Lighting")
+local LP         = Players.LocalPlayer
+
+local ENV = (getgenv and getgenv()) or _G
+
+local function safe(fn, ...)
+    if not fn then return end
+    local ok, r = pcall(fn, ...)
+    return ok, r
+end
+
+--================ COMPAT ================
+local gethui_    = gethui
+local protect_   = syn and syn.protect_gui
+local fireprompt = fireproximityprompt
+
+--================ REMOTE ================
+local HitRF
+
+local function findHit()
+    local ok, rf = pcall(function()
+        return RS.Packages.Knit.Services.CombatService.RF
+    end)
+    if ok and rf then
+        local h = rf:FindFirstChild("Hit")
+        if h and h:IsA("RemoteFunction") then HitRF = h return true end
+    end
+    for _, v in ipairs(RS:GetDescendants()) do
+        if v:IsA("RemoteFunction") and v.Name == "Hit" then
+            HitRF = v
+            return true
+        end
+    end
+    return false
+end
+
+task.spawn(function()
+    for _ = 1, 30 do
+        if findHit() then
+            print("[HUS HUB] Hit remote locked:", HitRF:GetFullName())
+            return
+        end
+        task.wait(1)
+    end
+    warn("[HUS HUB] Hit remote nahi mila — aura off rahegi.")
+end)
+
+--================ STATE ================
+local S = {
+    Aura = false, Range = 55, APS = 40,
+    Safe = "", Targets = "all", Grab = false,
+    ESP = false, Fly = false, Noclip = false,
+    AntiAFK = false, AntiVoid = false, AntiRag = false,
+}
+local conns = {}
+local function conn(sig, fn)
+    local c = sig:Connect(fn)
+    table.insert(conns, c)
+    return c
+end
+
+local function myChar() return LP.Character end
+local function myHum()
+    local c = myChar()
+    return c and c:FindFirstChildOfClass("Humanoid")
+end
+local function myHRP()
+    local c = myChar()
+    return c and c:FindFirstChild("HumanoidRootPart")
+end
+local function alive(p)
+    local c = p and p.Character
+    if not c then return nil end
+    local h = c:FindFirstChildOfClass("Humanoid")
+    local r = c:FindFirstChild("HumanoidRootPart")
+    if h and r and h.Health > 0 then return h, r end
+    return nil
+end
+local function matches(text, name)
+    text = (text or ""):lower():gsub("^%s*(.-)%s*$", "%1")
+    if text == "" then return false end
+    local ln = name:lower()
+    for w in text:gmatch("%S+") do
+        if ln:find(w, 1, true) then return true end
+    end
+    return false
+end
+
+--================ RAYFIELD ================
+local Rayfield = loadstring(game:HttpGet("https://sirius.menu/rayfield"))()
+
+local Window = Rayfield:CreateWindow({
+    Name = "HUS HUB",
+    LoadingTitle = "HUS HUB",
+    LoadingSubtitle = "High School Life RP",
+    ConfigurationSaving = {
+        Enabled = (writefile ~= nil),
+        FolderName = "HUS_HUB",
+        FileName = "config",
+    },
+    KeySystem = true,
+    KeySettings = {
+        Title = "HUS HUB",
+        Subtitle = "Key System",
+        Note = "Key: HUS2026",
+        FileName = "HUS_HUB_Key",
+        SaveKey = true,
+        KeyDisplayed = true,
+        GrabKeyFromSite = false,
+        Key = { "HUS2026" },
+    },
+})
+
+Rayfield:Notify({
+    Title = "HUS HUB Loaded",
+    Content = "Hit remote: " .. (HitRF and "locked ✓" or "pending..."),
+    Duration = 4,
+    Image = 4483362458,
+})
+
+--================ COMBAT ================
+local Combat = Window:CreateTab("Combat", nil)
+Combat:CreateSection("Kill Aura")
+
+Combat:CreateToggle({
+    Name = "Kill Aura",
+    CurrentValue = false,
+    Flag = "AuraOn",
+    Callback = function(v)
+        S.Aura = v
+        if v and not HitRF then
+            findHit()
+            if not HitRF then
+                Rayfield:Notify({
+                    Title = "Hit remote missing",
+                    Content = "Rejoin karke dobara try karo.",
+                    Duration = 5,
+                    Image = 4483362458,
+                })
+            end
+        end
+    end,
+})
+
+Combat:CreateSlider({
+    Name = "Range",
+    Range = { 5, 200 },
+    Increment = 5,
+    Suffix = " studs",
+    CurrentValue = 55,
+    Flag = "AuraRange",
+    Callback = function(v) S.Range = v end,
+})
+
+Combat:CreateSlider({
+    Name = "Hits per second",
+    Range = { 1, 200 },
+    Increment = 1,
+    Suffix = " aps",
+    CurrentValue = 40,
+    Flag = "AuraAPS",
+    Callback = function(v) S.APS = v end,
+})
+
+Combat:CreateInput({
+    Name = "Safelist",
+    PlaceholderText = "naam, space se alag",
+    RemoveTextAfterFocusLost = false,
+    Flag = "AuraSafe",
+    Callback = function(t) S.Safe = t end,
+})
+
+Combat:CreateInput({
+    Name = "Targets",
+    PlaceholderText = "all ya specific naam",
+    CurrentValue = "all",
+    RemoveTextAfterFocusLost = false,
+    Flag = "AuraTargets",
+    Callback = function(t) S.Targets = (t == "" and "all" or t) end,
+})
+
+Combat:CreateButton({
+    Name = "TP Nearest Player",
+    Callback = function()
+        local r = myHRP()
+        if not r then return end
+        local best, bd = nil, math.huge
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP then
+                local _, pr = alive(p)
+                if pr then
+                    local d = (pr.Position - r.Position).Magnitude
+                    if d < bd then best, bd = pr, d end
+                end
+            end
+        end
+        if best then r.CFrame = best.CFrame * CFrame.new(0, 0, 3) end
+    end,
+})
+
+--=========== AURA LOOP ===========
+local lastHit = 0
+conn(RunService.Heartbeat, function()
+    if not S.Aura or not HitRF then return end
+    if os.clock() - lastHit < 1 / math.max(S.APS, 1) then return end
+    local _, myR = alive(LP)
+    if not myR then return end
+
+    local best, bestD = nil, math.huge
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP and not matches(S.Safe, p.Name) then
+            local mode = S.Targets:lower():gsub("%s", "")
+            if mode == "all" or mode == "" or matches(S.Targets, p.Name) then
+                local h, r = alive(p)
+                if h and r then
+                    local d = (r.Position - myR.Position).Magnitude
+                    if d <= S.Range and d < bestD then
+                        best, bestD = { h = h, r = r }, d
+                    end
+                end
+            end
+        end
+    end
+
+    if best then
+        lastHit = os.clock()
+        local pos = best.r.Position + best.r.CFrame.LookVector * 2
+        pcall(function() HitRF:InvokeServer(best.h, pos) end)
+    end
+end)
+
+--================ VISUAL ================
+local Visual = Window:CreateTab("Visual", nil)
+Visual:CreateSection("Player ESP")
+
+local highlights = {}
+local function clearESP()
+    for p, o in pairs(highlights) do
+        pcall(function() o.hl:Destroy(); o.bl:Destroy() end)
+        highlights[p] = nil
+    end
+end
+
+Visual:CreateToggle({
+    Name = "Player ESP",
+    CurrentValue = false,
+    Flag = "EspOn",
+    Callback = function(v)
+        S.ESP = v
+        if not v then clearESP() end
+    end,
+})
+
+conn(RunService.Heartbeat, function()
+    if not S.ESP then return end
+    local myR = myHRP()
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local c = p.Character
+            local h, r = alive(p)
+            if h and r then
+                if not highlights[p] then
+                    local hl = Instance.new("Highlight")
+                    hl.FillColor = Color3.fromRGB(255, 60, 120)
+                    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+                    hl.FillTransparency = 0.6
+                    hl.Parent = c
+                    local bl = Instance.new("BillboardGui")
+                    bl.Size = UDim2.fromOffset(200, 40)
+                    bl.StudsOffset = Vector3.new(0, 3, 0)
+                    bl.AlwaysOnTop = true
+                    bl.Parent = c:FindFirstChild("Head") or r
+                    local tl = Instance.new("TextLabel")
+                    tl.Size = UDim2.fromScale(1, 1)
+                    tl.BackgroundTransparency = 1
+                    tl.TextColor3 = Color3.new(1, 1, 1)
+                    tl.TextStrokeTransparency = 0
+                    tl.Font = Enum.Font.GothamBold
+                    tl.TextSize = 12
+                    tl.Parent = bl
+                    highlights[p] = { hl = hl, bl = bl, tl = tl }
+                end
+                local o = highlights[p]
+                if o and o.tl then
+                    local d = myR and math.floor((r.Position - myR.Position).Magnitude) or 0
+                    o.tl.Text = ("%s [%d]"):format(p.Name, d)
+                end
+            elseif highlights[p] then
+                pcall(function() highlights[p].hl:Destroy(); highlights[p].bl:Destroy() end)
+                highlights[p] = nil
+            end
+        end
+    end
+end)
+
+Visual:CreateButton({
+    Name = "Fullbright",
+    Callback = function()
+        Lighting.Brightness = 3
+        Lighting.ClockTime = 14
+        Lighting.FogEnd = 1e5
+        Lighting.GlobalShadows = false
+    end,
+})
+
+--================ MOVEMENT ================
+local Move = Window:CreateTab("Movement", nil)
+Move:CreateSection("Player")
+
+Move:CreateSlider({
+    Name = "WalkSpeed",
+    Range = { 16, 300 },
+    Increment = 1,
+    CurrentValue = 16,
+    Flag = "Speed",
+    Callback = function(v)
+        local h = myHum()
+        if h then h.WalkSpeed = v end
+    end,
+})
+
+Move:CreateSlider({
+    Name = "JumpPower",
+    Range = { 50, 300 },
+    Increment = 5,
+    CurrentValue = 50,
+    Flag = "Jump",
+    Callback = function(v)
+        local h = myHum()
+        if h then h.UseJumpPower = true; h.JumpPower = v end
+    end,
+})
+
+local flyBV, flyBG
+local function stopFly()
+    if flyBV then flyBV:Destroy(); flyBV = nil end
+    if flyBG then flyBG:Destroy(); flyBG = nil end
+    local h = myHum()
+    if h then h.PlatformStand = false end
+end
+local function startFly()
+    local h, r = alive(LP)
+    if not h or not r then return end
+    h.PlatformStand = true
+    flyBV = Instance.new("BodyVelocity")
+    flyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+    flyBV.Velocity = Vector3.zero
+    flyBV.Parent = r
+    flyBG = Instance.new("BodyGyro")
+    flyBG.MaxTorque = Vector3.new(1e5, 1e5, 1e5)
+    flyBG.P = 1000
+    flyBG.Parent = r
+end
+
+Move:CreateToggle({
+    Name = "Fly (Space up / Ctrl down)",
+    CurrentValue = false,
+    Flag = "FlyOn",
+    Callback = function(v)
+        S.Fly = v
+        if v then startFly() else stopFly() end
+    end,
+})
+
+conn(RunService.RenderStepped, function()
+    if not S.Fly then return end
+    local h, r = alive(LP)
+    if not h or not r then return end
+    if not flyBV then startFly() return end
+    local cam = workspace.CurrentCamera
+    local dir = Vector3.zero
+    if h.MoveDirection.Magnitude > 0 then dir += h.MoveDirection end
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then dir += Vector3.new(0, 1, 0) end
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then dir += Vector3.new(0, -1, 0) end
+    flyBV.Velocity = dir.Magnitude > 0 and (cam.CFrame.Rotation * dir.Unit) * 60 or Vector3.zero
+    flyBG.CFrame = cam.CFrame.Rotation
+end)
+
+Move:CreateToggle({
+    Name = "Noclip",
+    CurrentValue = false,
+    Flag = "NoclipOn",
+    Callback = function(v) S.Noclip = v end,
+})
+
+conn(RunService.Stepped, function()
+    if not S.Noclip then return end
+    local c = myChar()
+    if not c then return end
+    for _, v in ipairs(c:GetDescendants()) do
+        if v:IsA("BasePart") and v.CanCollide then v.CanCollide = false end
+    end
+end)
+
+--================ MISC ================
+local Misc = Window:CreateTab("Misc", nil)
+Misc:CreateSection("Protection")
+
+Misc:CreateToggle({
+    Name = "Anti AFK",
+    CurrentValue = false,
+    Flag = "AntiAFK",
+    Callback = function(v) S.AntiAFK = v end,
+})
+
+Misc:CreateToggle({
+    Name = "Anti Void",
+    CurrentValue = false,
+    Flag = "AntiVoid",
+    Callback = function(v) S.AntiVoid = v end,
+})
+
+Misc:CreateToggle({
+    Name = "Anti Ragdoll",
+    CurrentValue = false,
+    Flag = "AntiRag",
+    Callback = function(v) S.AntiRag = v end,
+})
+
+Misc:CreateToggle({
+    Name = "Auto Grab (ProximityPrompt)",
+    CurrentValue = false,
+    Flag = "Grab",
+    Callback = function(v) S.Grab = v end,
+})
+
+local vu = game:GetService("VirtualUser")
+conn(LP.Idled, function()
+    if not S.AntiAFK then return end
+    pcall(function()
+        vu:CaptureController()
+        vu:ClickButton2(Vector2.zero)
+    end)
+end)
+
+local lastSafe
+conn(RunService.Heartbeat, function()
+    local r = myHRP()
+    if not r then return end
+    if r.Position.Y > -30 then lastSafe = r.CFrame end
+    if S.AntiVoid and r.Position.Y < -60 then
+        pcall(function() r.CFrame = lastSafe or CFrame.new(0, 60, 0) end)
+    end
+end)
+
+conn(RunService.Heartbeat, function()
+    if not S.AntiRag then return end
+    local h = myHum()
+    if h and h.PlatformStand and not S.Fly then h.PlatformStand = false end
+end)
+
+conn(RunService.Heartbeat, function()
+    if not S.Grab or not fireprompt then return end
+    local r = myHRP()
+    if not r then return end
+    for _, v in ipairs(workspace:GetDescendants()) do
+        if v:IsA("ProximityPrompt") and v.Enabled then
+            local part = v.Parent
+            if part and part:IsA("BasePart") and (part.Position - r.Position).Magnitude < 15 then
+                pcall(fireprompt, v)
+            end
+        end
+    end
+end)
+
+Misc:CreateSection("Game")
+
+Misc:CreateInput({
+    Name = "Bio Changer",
+    PlaceholderText = "bio text likh ke Enter",
+    RemoveTextAfterFocusLost = true,
+    Callback = function(t)
+        if t == "" then return end
+        local bio
+        for _, v in ipairs(RS:GetDescendants()) do
+            if (v:IsA("RemoteEvent") or v:IsA("RemoteFunction")) and v.Name:lower():find("bio") then
+                bio = v
+                break
+            end
+        end
+        if not bio then
+            Rayfield:Notify({ Title = "Bio remote nahi mila", Content = "Dump karke dekho", Duration = 4, Image = 4483362458 })
+            return
+        end
+        pcall(function()
+            if bio:IsA("RemoteFunction") then
+                bio:InvokeServer(t)
+            else
+                bio:FireServer(t)
+            end
+        end)
+    end,
+})
+
+Misc:CreateButton({
+    Name = "Dump Remotes to Console",
+    Callback = function()
+        for _, v in ipairs(RS:GetDescendants()) do
+            if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+                print(v:GetFullName())
+            end
+        end
+        print("[HUS HUB] Hit remote:", HitRF and HitRF:GetFullName() or "nil")
+    end,
+})
+
+Misc:CreateButton({
+    Name = "Rejoin",
+    Callback = function()
+        game:GetService("TeleportService"):Teleport(game.PlaceId)
+    end,
+})
+
+Misc:CreateButton({
+    Name = "Unload Hub",
+    Callback = function()
+        S.Aura, S.ESP, S.Fly, S.Noclip = false, false, false, false
+        clearESP(); stopFly()
+        for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
+        table.clear(conns)
+        Rayfield:Destroy()
+    end,
+})
+
+LP.CharacterAdded:Connect(function()
+    task.wait(1)
+    local h = myHum()
+    if h then h.WalkSpeed = 16 end
+end)
+
+print("[HUS HUB] ready · HitRF =", HitRF and HitRF:GetFullName() or "nil")
