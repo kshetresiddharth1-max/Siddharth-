@@ -22,8 +22,6 @@ local function safe(fn, ...)
 end
 
 --================ COMPAT ================
-local gethui_    = gethui
-local protect_   = syn and syn.protect_gui
 local fireprompt = fireproximityprompt
 
 --================ REMOTE ================
@@ -59,8 +57,9 @@ end)
 
 --================ STATE ================
 local S = {
-    Aura = false, Range = 55, APS = 40,
+    Aura = false, Range = 55, APS = 40, Damage = 1, Multi = false,
     Safe = "", Targets = "all", Grab = false,
+    Bang = nil, BangSpeed = 25, BangDist = 3, BangTarget = "",
     ESP = false, Fly = false, Noclip = false,
     AntiAFK = false, AntiVoid = false, AntiRag = false,
 }
@@ -174,6 +173,23 @@ Combat:CreateSlider({
     Callback = function(v) S.APS = v end,
 })
 
+Combat:CreateSlider({
+    Name = "Damage (hits per tick)",
+    Range = { 1, 15 },
+    Increment = 1,
+    Suffix = "x",
+    CurrentValue = 1,
+    Flag = "AuraDmg",
+    Callback = function(v) S.Damage = v end,
+})
+
+Combat:CreateToggle({
+    Name = "Multi Target (sabko maaro)",
+    CurrentValue = false,
+    Flag = "AuraMulti",
+    Callback = function(v) S.Multi = v end,
+})
+
 Combat:CreateInput({
     Name = "Safelist",
     PlaceholderText = "naam, space se alag",
@@ -211,35 +227,259 @@ Combat:CreateButton({
 })
 
 --=========== AURA LOOP ===========
-local lastHit = 0
-conn(RunService.Heartbeat, function()
-    if not S.Aura or not HitRF then return end
-    if os.clock() - lastHit < 1 / math.max(S.APS, 1) then return end
+local lastHit, busy = 0, false
+
+local function hitPass()
     local _, myR = alive(LP)
     if not myR then return end
+    local mode = S.Targets:lower():gsub("%s", "")
 
-    local best, bestD = nil, math.huge
+    local found = {}
     for _, p in ipairs(Players:GetPlayers()) do
         if p ~= LP and not matches(S.Safe, p.Name) then
-            local mode = S.Targets:lower():gsub("%s", "")
             if mode == "all" or mode == "" or matches(S.Targets, p.Name) then
                 local h, r = alive(p)
                 if h and r then
                     local d = (r.Position - myR.Position).Magnitude
-                    if d <= S.Range and d < bestD then
-                        best, bestD = { h = h, r = r }, d
+                    if d <= S.Range then
+                        table.insert(found, { h = h, r = r, d = d })
                     end
                 end
             end
         end
     end
+    if #found == 0 then return end
+    table.sort(found, function(a, b) return a.d < b.d end)
 
+    local count = S.Multi and math.min(#found, 12) or 1
+    for i = 1, count do
+        local t = found[i]
+        local pos = t.r.Position + t.r.CFrame.LookVector * 2
+        for _ = 1, math.max(S.Damage, 1) do
+            pcall(function() HitRF:InvokeServer(t.h, pos) end)
+        end
+    end
+end
+
+conn(RunService.Heartbeat, function()
+    if not S.Aura or not HitRF or busy then return end
+    if os.clock() - lastHit < 1 / math.max(S.APS, 1) then return end
+    lastHit = os.clock()
+    busy = true
+    task.spawn(function()
+        pcall(hitPass)
+        busy = false
+    end)
+end)
+
+--================ BANGS ================
+local Bangs = Window:CreateTab("Bangs", nil)
+Bangs:CreateSection("Target")
+
+Bangs:CreateParagraph({
+    Title = "Bang kaise use karein",
+    Content = "Target khali chhodo = nearest player. Ya naam likho. Phir koi bang button dabao. 'Stop Bang' se band.",
+})
+
+Bangs:CreateInput({
+    Name = "Bang Target",
+    PlaceholderText = "khali = nearest player",
+    RemoveTextAfterFocusLost = false,
+    Flag = "BangTarget",
+    Callback = function(t) S.BangTarget = t end,
+})
+
+Bangs:CreateSlider({
+    Name = "Bang Speed",
+    Range = { 1, 100 },
+    Increment = 1,
+    CurrentValue = 25,
+    Flag = "BangSpeed",
+    Callback = function(v) S.BangSpeed = v end,
+})
+
+Bangs:CreateSlider({
+    Name = "Bang Distance",
+    Range = { 1, 10 },
+    Increment = 1,
+    Suffix = " studs",
+    CurrentValue = 3,
+    Flag = "BangDist",
+    Callback = function(v) S.BangDist = v end,
+})
+
+--=========== BANG MATH ===========
+local OFFSETS = {
+    ["Normal Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(0, 0, d) * CFrame.Angles(0, math.pi, 0)
+    end,
+    ["Mouth Bang"] = function(tcf, hcf, th, d)
+        return hcf * CFrame.new(0, 0, d * 0.5) * CFrame.Angles(0, math.pi, 0)
+    end,
+    ["Pussy Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(0, -1.2, d * 0.5) * CFrame.Angles(0, math.pi, 0)
+    end,
+    ["Back Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(0, 0, -d)
+    end,
+    ["Side Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(d, 0, 0) * CFrame.Angles(0, math.pi / 2, 0)
+    end,
+    ["Head Sit Bang"] = function(tcf, hcf, th, d)
+        return hcf * CFrame.new(0, 1.3, 0) * CFrame.Angles(0, math.pi, 0)
+    end,
+    ["Sit Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(0, 0, d * 0.8) * CFrame.Angles(0, math.pi, 0)
+    end,
+    ["Orbit Bang"] = function(tcf, hcf, th, d)
+        local pos = (tcf * CFrame.new(math.sin(th) * d, 0, math.cos(th) * d)).Position
+        return CFrame.lookAt(pos, tcf.Position)
+    end,
+    ["Vertical Orbit Bang"] = function(tcf, hcf, th, d)
+        local pos = (tcf * CFrame.new(0, math.sin(th) * d, math.cos(th) * d)).Position
+        return CFrame.lookAt(pos, tcf.Position)
+    end,
+    ["Circle Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(math.sin(th) * d, 0, math.cos(th) * d)
+    end,
+    ["Figure 8 Bang"] = function(tcf, hcf, th, d)
+        local pos = (tcf * CFrame.new(math.sin(th) * d, math.sin(th * 2) * d * 0.6, math.cos(th) * d)).Position
+        return CFrame.lookAt(pos, tcf.Position)
+    end,
+    ["Spin Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(0, 0, d) * CFrame.Angles(0, math.pi + th, 0)
+    end,
+    ["Upside Down Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(0, d, 0) * CFrame.Angles(math.pi, 0, 0)
+    end,
+    ["Sky Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(0, d * 2.5, 0)
+    end,
+    ["Far Bang"] = function(tcf, hcf, th, d)
+        return tcf * CFrame.new(0, 0, d * 2.5) * CFrame.Angles(0, math.pi, 0)
+    end,
+    ["Random Bang"] = function(tcf, hcf, th, d)
+        local pos = (tcf * CFrame.new((math.random() - 0.5) * d * 2, (math.random() - 0.5) * d * 2, (math.random() - 0.5) * d * 2)).Position
+        return CFrame.lookAt(pos, tcf.Position)
+    end,
+}
+
+local ATTACH = {
+    ["Attach Bang"] = true,
+}
+
+--=========== BANG CONTROL ===========
+local bangTheta, bangLast, attachOffset = 0, 0, nil
+
+local function stopBang(silent)
+    if S.Bang then
+        S.Bang = nil
+        attachOffset = nil
+        local h = myHum()
+        if h then h.PlatformStand = false end
+        if not silent then
+            Rayfield:Notify({ Title = "Bang stopped", Content = "", Duration = 2, Image = 4483362458 })
+        end
+    end
+end
+
+local function startBang(name)
+    local h, r = alive(LP)
+    if not h or not r then return end
+    if S.Fly then stopFly() S.Fly = false end
+    h.PlatformStand = true
+    bangTheta = 0
+    bangLast = os.clock()
+    attachOffset = nil
+    S.Bang = name
+    if ATTACH[name] then
+        local _, tr = resolveTarget()
+        if tr then attachOffset = tr.CFrame:ToObjectSpace(r.CFrame) end
+    end
+end
+
+function resolveTarget()
+    local want = (S.BangTarget or ""):lower():gsub("^%s*(.-)%s*$", "%1")
+    if want ~= "" then
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LP and p.Name:lower():find(want, 1, true) then
+                local h, r = alive(p)
+                if h then return p, h, r end
+            end
+        end
+        return nil
+    end
+    local _, myR = alive(LP)
+    if not myR then return nil end
+    local best, bd
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local h, r = alive(p)
+            if h then
+                local d = (r.Position - myR.Position).Magnitude
+                if not bd or d < bd then best, bd = p, d end
+            end
+        end
+    end
     if best then
-        lastHit = os.clock()
-        local pos = best.r.Position + best.r.CFrame.LookVector * 2
-        pcall(function() HitRF:InvokeServer(best.h, pos) end)
+        local h, r = alive(best)
+        return best, h, r
+    end
+    return nil
+end
+
+conn(RunService.Heartbeat, function()
+    if not S.Bang then return end
+    local h, r = alive(LP)
+    if not h or not r then return end
+    local _, _, tr = resolveTarget()
+    if not tr then return end
+
+    local now = os.clock()
+    local dt = now - bangLast
+    bangLast = now
+    bangTheta += dt * (S.BangSpeed * 0.1)
+
+    local thcf = tr.CFrame
+    local head = tr.Parent and tr.Parent:FindFirstChild("Head")
+    local hcf = head and head.CFrame or thcf
+
+    local cf
+    if ATTACH[S.Bang] then
+        if not attachOffset then attachOffset = thcf:ToObjectSpace(r.CFrame) end
+        cf = thcf * attachOffset
+    else
+        local fn = OFFSETS[S.Bang]
+        if not fn then return end
+        local ok, res = pcall(fn, thcf, hcf, bangTheta, S.BangDist)
+        if ok then cf = res end
+    end
+
+    if cf then
+        r.CFrame = cf
+        r.AssemblyLinearVelocity = Vector3.zero
     end
 end)
+
+--=========== BANG BUTTONS ===========
+local BangSec = Bangs:CreateSection("Bang Types")
+
+for _, name in ipairs({
+    "Normal Bang", "Mouth Bang", "Pussy Bang", "Back Bang", "Side Bang",
+    "Head Sit Bang", "Sit Bang", "Attach Bang", "Orbit Bang",
+    "Vertical Orbit Bang", "Circle Bang", "Figure 8 Bang", "Spin Bang",
+    "Upside Down Bang", "Sky Bang", "Far Bang", "Random Bang",
+}) do
+    Bangs:CreateButton({
+        Name = name,
+        Callback = function() startBang(name) end,
+    })
+end
+
+Bangs:CreateButton({
+    Name = "■ Stop Bang",
+    Callback = function() stopBang(false) end,
+})
 
 --================ VISUAL ================
 local Visual = Window:CreateTab("Visual", nil)
@@ -344,15 +584,16 @@ Move:CreateSlider({
 })
 
 local flyBV, flyBG
-local function stopFly()
+function stopFly()
     if flyBV then flyBV:Destroy(); flyBV = nil end
     if flyBG then flyBG:Destroy(); flyBG = nil end
     local h = myHum()
-    if h then h.PlatformStand = false end
+    if h and not S.Bang then h.PlatformStand = false end
 end
 local function startFly()
     local h, r = alive(LP)
     if not h or not r then return end
+    if S.Bang then stopBang(true) end
     h.PlatformStand = true
     flyBV = Instance.new("BodyVelocity")
     flyBV.MaxForce = Vector3.new(1e5, 1e5, 1e5)
@@ -447,6 +688,8 @@ end)
 
 local lastSafe
 conn(RunService.Heartbeat, function()
+    local lastSafe
+conn(RunService.Heartbeat, function()
     local r = myHRP()
     if not r then return end
     if r.Position.Y > -30 then lastSafe = r.CFrame end
@@ -458,7 +701,7 @@ end)
 conn(RunService.Heartbeat, function()
     if not S.AntiRag then return end
     local h = myHum()
-    if h and h.PlatformStand and not S.Fly then h.PlatformStand = false end
+    if h and h.PlatformStand and not S.Fly and not S.Bang then h.PlatformStand = false end
 end)
 
 conn(RunService.Heartbeat, function()
@@ -527,6 +770,7 @@ Misc:CreateButton({
     Name = "Unload Hub",
     Callback = function()
         S.Aura, S.ESP, S.Fly, S.Noclip = false, false, false, false
+        stopBang(true)
         clearESP(); stopFly()
         for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
         table.clear(conns)
@@ -538,6 +782,7 @@ LP.CharacterAdded:Connect(function()
     task.wait(1)
     local h = myHum()
     if h then h.WalkSpeed = 16 end
+    if S.Bang then S.Bang = nil end
 end)
 
 print("[HUS HUB] ready · HitRF =", HitRF and HitRF:GetFullName() or "nil")
